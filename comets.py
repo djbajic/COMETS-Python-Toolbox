@@ -548,12 +548,12 @@ class model:
         self.reactions = reactions
         self.metabolites = metabolites
                 
-    def write_comets_model(self, alternate_path=None):
+    def write_comets_model(self, working_dir=None):
         
-        if alternate_path is not None:
-            path_to_write = alternate_path
-        else:
-            path_to_write = self.id + '.cmd'
+        path_to_write = ""
+        if working_dir is not None:
+            path_to_write = working_dir
+        path_to_write = path_to_write + self.id + '.cmd'
         
         # format variables for writing comets model
         bnd = self.reactions.loc[(self.reactions['LB']
@@ -1034,14 +1034,14 @@ class layout:
         ids = [x.id for x in self.models]
         return(ids)
         
-    def write_necessary_files(self, layoutfile):
-        self.write_layout(layoutfile)
-        self.write_model_files()
+    def write_necessary_files(self, working_dir):
+        self.write_layout(working_dir)
+        self.write_model_files(working_dir)
         
-    def write_model_files(self):
+    def write_model_files(self, working_dir = ""):
         '''writes each model file'''
         for model in self.models:
-            model.write_comets_model()
+            model.write_comets_model(working_dir)
             
     def display_current_media(self):
         print(self.media[self.media['init_amount'] != 0.0])
@@ -1177,14 +1177,14 @@ class layout:
                 #      'able to be taken up by any of the current models')
         self.media = self.media.reset_index(drop=True)
 
-    def write_layout(self, outfile):
+    def write_layout(self, working_dir):
         ''' Write the layout in a file'''
-
+        outfile = working_dir + ".current_layout"
         if os.path.isfile(outfile):
             os.remove(outfile)
         
         lyt = open(outfile, 'a')
-        self.__write_models_and_world_grid_chunk(lyt)
+        self.__write_models_and_world_grid_chunk(lyt, working_dir)
         self.__write_media_chunk(lyt)
         self.__write_diffusion_chunk(lyt)
         self.__write_local_media_chunk(lyt)
@@ -1197,11 +1197,14 @@ class layout:
 
         lyt.close()
         
-    def __write_models_and_world_grid_chunk(self, lyt):
+    def __write_models_and_world_grid_chunk(self, lyt, working_dir):
         """ writes the top 3 lines  to the open lyt file"""
-        lyt.write('model_file ' +
-                  '.cmd '.join(self.get_model_ids()) +
-                  '.cmd\n')
+        
+        model_file_line = "{}.cmd".format(".cmd ".join(self.get_model_ids())).split(" ")
+        model_file_line = [_ + " " for _ in model_file_line]
+        model_file_line = working_dir + working_dir.join(model_file_line)
+        model_file_line = "model_file " + model_file_line + "\n"
+        lyt.write(model_file_line)
         lyt.write('  model_world\n')
         
         lyt.write('    grid_size ' +
@@ -1729,7 +1732,7 @@ class comets:
         c_package = self.working_dir + '.current_package'
         c_script = self.working_dir + '.current_script'
 
-        self.layout.write_necessary_files(self.working_dir + '.current_layout')
+        self.layout.write_necessary_files(self.working_dir)
         # self.layout.write_layout(self.working_dir + '.current_layout')
         self.parameters.write_params(c_global, c_package)
 
