@@ -548,12 +548,12 @@ class model:
         self.reactions = reactions
         self.metabolites = metabolites
                 
-    def write_comets_model(self, alternate_path=None):
+    def write_comets_model(self, working_dir=None):
         
-        if alternate_path is not None:
-            path_to_write = alternate_path
-        else:
-            path_to_write = self.id + '.cmd'
+        path_to_write = ""
+        if working_dir is not None:
+            path_to_write = working_dir
+        path_to_write = path_to_write + self.id + '.cmd'
         
         # format variables for writing comets model
         bnd = self.reactions.loc[(self.reactions['LB']
@@ -722,11 +722,15 @@ class layout:
         
         self.barriers = []
         
+        self.region_map = None
+        self.region_parameters = {}
+        
         self.__local_media_flag = False
         self.__diffusion_flag = False
         self.__refresh_flag = False
         self.__static_flag = False
         self.__barrier_flag = False
+        self.__region_flag = False
         
         if input_obj is None:
             print('building empty layout model\nmodels will need to be added' +
@@ -743,6 +747,47 @@ class layout:
                 input_obj = [input_obj]  # probably just one cobra model
             self.models = input_obj
             self.update_models()
+
+    def set_region_parameters(self, region, diffusion, friction):
+        """ 
+        COMETS can have different regions with different substrate diffusivities
+        and frictions.  Here, you set those parameters. For example, if a layout
+        had three different substrates, and you wanted to define their diffusion
+        for region 1, you would use:
+            
+            layout.set_region_parameters(1, [1e-6, 1e-6, 1e-6], 1.0)
+            
+        This does not affect a simulation unless a region map is also set, using
+        the layout.set_region_map() function.
+        """
+        if not self.__region_flag:
+            print("Warning: You are setting region parameters but a region" +
+                  "map has not been set. Use layout.set_region_map() or these" +
+                  "parameters will be unused")
+        self.region_parameters[region] = [diffusion, friction]
+    
+    def set_region_map(self, region_map):
+        """
+        COMETS can have different regions with different substrate diffusivities
+        and frictions.  Here, you set the map defining the regions. Specifically,
+        you provide either:
+            1) a numpy array whose shape == layout.grid, or
+            2) a list of lists whose first length is grid[0] and second len is grid[1]
+        
+        Populating these objects should be integer values, beginning at 1 and 
+        incrementing only, that define the different grid areas.  These are 
+        intimately connected to region_parameters, which are set with
+        layout.set_region_parameters()
+        """
+        if isinstance(region_map, list):
+            region_map = np.array(region_map)
+        if not tuple(self.grid) == region_map.shape:
+            raise ValueError("the shape of your region map must be the " +
+                             "same as the grid size. specifically, \n" +
+                             "tuple(layout.grid) == region_map.shape\n" +
+                             "must be True after region_map = np.array(region_map)")
+        self.region_map = region_map
+        self.__region_flag = True
 
     def read_comets_layout(self, input_obj):
 
@@ -984,6 +1029,51 @@ class layout:
                 print('\n ERROR OutOfGrid: Some local "refresh" lines ' +
                       'have coordinates that fall outside of the ' +
                       '\ndefined ' + 'grid')
+                
+        ### region-based information (substrate diffusivity,friction, layout)
+        self.__region_flag = False
+        try:
+            if 'SUBSTRATE_LAYOUT' in filedata_string.upper():
+                lin_substrate = re.split('SUBSTRATE_LAYOUT',
+                                         filedata_string.upper())[0].count('\n')
+                lin_substrate_end = next(x for x in end_blocks if x > lin_substrate)
+                region_map_data = []
+                for i in range(lin_substrate+1, lin_substrate_end):
+                    region_map_data.append([int(x) for x in f_lines[i].split()])
+                region_map_data = np.array(region_map_data, dtype = int)
+                if region_map_data.shape != tuple(self.grid):
+                    raise CorruptLine
+                self.__region_flag = True
+                self.region_map = region_map_data
+        except CorruptLine:
+            print('\n ERROR CorruptLine: Some substrate_layout lines are ' +
+                  ' longer or shorter than the grid width, or there are more' +
+                  ' lines than the grid length')
+
+        try:
+            if 'SUBSTRATE_DIFFUSIVITY' in filedata_string.upper():
+                lin_substrate = re.split('SUBSTRATE_DIFFUSIVITY',
+                                         filedata_string.upper())[0].count('\n')
+                lin_substrate_end = next(x for x in end_blocks if x > lin_substrate)
+                self.region_parameters = {}
+                region = 1
+                for i in range(lin_substrate+1, lin_substrate_end):
+                    self.region_parameters[region] = [None, None]
+                    self.region_parameters[region][0] = [float(x) for x in f_lines[i].split()]
+                    if len(self.region_parameters[region][0]) != len(self.media.metabolite):
+                        raise CorruptLine
+                    region += 1
+        except CorruptLine:
+            print('\n ERROR CorruptLine: Some substrate_diffusivity lines are ' +
+                  ' longer or shorter than the number of metabolites')
+        if 'SUBSTRATE_FRICTION' in filedata_string.upper():
+            lin_substrate = re.split('SUBSTRATE_FRICTION',
+                                     filedata_string.upper())[0].count('\n')
+            lin_substrate_end = next(x for x in end_blocks if x > lin_substrate)
+            region = 1
+            for i in range(lin_substrate+1, lin_substrate_end):
+                self.region_parameters[region][1] = float(f_lines[i].split()[0])
+                region += 1
 
         # '''----------- STATIC MEDIA ----------------------------------'''
         # .. global static values
@@ -1036,17 +1126,18 @@ class layout:
         ids = [x.id for x in self.models]
         return(ids)
         
-    def write_necessary_files(self, layoutfile):
-        self.write_layout(layoutfile)
-        self.write_model_files()
+    def write_necessary_files(self, working_dir):
+        self.write_layout(working_dir)
+        self.write_model_files(working_dir)
         
-    def write_model_files(self):
+    def write_model_files(self, working_dir = ""):
         '''writes each model file'''
         for model in self.models:
-            model.write_comets_model()
+            model.write_comets_model(working_dir)
             
     def display_current_media(self):
         print(self.media[self.media['init_amount'] != 0.0])
+
         
     def add_barriers(self, barriers):
         # first see if they provided only one barrier not in a nested list, and if
@@ -1179,31 +1270,35 @@ class layout:
                 #      'able to be taken up by any of the current models')
         self.media = self.media.reset_index(drop=True)
 
-    def write_layout(self, outfile):
+    def write_layout(self, working_dir):
         ''' Write the layout in a file'''
-
+        outfile = working_dir + ".current_layout"
         if os.path.isfile(outfile):
             os.remove(outfile)
         
         lyt = open(outfile, 'a')
-        self.__write_models_and_world_grid_chunk(lyt)
+        self.__write_models_and_world_grid_chunk(lyt, working_dir)
         self.__write_media_chunk(lyt)
         self.__write_diffusion_chunk(lyt)
         self.__write_local_media_chunk(lyt)
         self.__write_refresh_chunk(lyt)
         self.__write_static_chunk(lyt)
         self.__write_barrier_chunk(lyt)
+        self.__write_regions_chunk(lyt)
         lyt.write(r'  //' + '\n')
 
         self.__write_initial_pop_chunk(lyt)
 
         lyt.close()
         
-    def __write_models_and_world_grid_chunk(self, lyt):
+    def __write_models_and_world_grid_chunk(self, lyt, working_dir):
         """ writes the top 3 lines  to the open lyt file"""
-        lyt.write('model_file ' +
-                  '.cmd '.join(self.get_model_ids()) +
-                  '.cmd\n')
+        
+        model_file_line = "{}.cmd".format(".cmd ".join(self.get_model_ids())).split(" ")
+        model_file_line = [_ + " " for _ in model_file_line]
+        model_file_line = working_dir + working_dir.join(model_file_line)
+        model_file_line = "model_file " + model_file_line + "\n"
+        lyt.write(model_file_line)
         lyt.write('  model_world\n')
         
         lyt.write('    grid_size ' +
@@ -1303,6 +1398,34 @@ class layout:
             for barrier in self.barriers:
                 lyt.write('      {} {}\n'.format(barrier[0], barrier[1]))
             lyt.write('    //\n')
+            
+    def __write_regions_chunk(self, lyt):
+        """ used by write_layout to write the regions section to the open lyt file
+        specifically this section includes "substrate_diffusivity" "substrate_friction"
+        and "substrate_layout".
+        """
+        if self.__region_flag:
+            keys = list(self.region_parameters.keys())
+            keys.sort()
+            lyt.write('    substrate_diffusivity\n')
+            for key in keys:
+                diff = [str(x) for x in self.region_parameters[key][0]]
+                line = "    " + "    ".join(diff) + "\n"
+                lyt.write(line)
+            lyt.write("    //\n")
+            lyt.write("    substrate_friction\n")
+            for key in keys:
+                fric = self.region_parameters[key][1]
+                line = "    " + str(fric) + "\n"
+                lyt.write(line)
+            lyt.write("    //\n")
+            lyt.write("    substrate_layout\n")
+            for i in range(self.region_map.shape[0]):
+                for j in range(self.region_map.shape[1]):
+                    lyt.write("    ")
+                    lyt.write(str(self.region_map[i,j]))
+                lyt.write("\n")
+            lyt.write("    //\n")
 
 
     def __write_initial_pop_chunk(self, lyt):
@@ -1728,7 +1851,7 @@ class comets:
         c_package = self.working_dir + '.current_package'
         c_script = self.working_dir + '.current_script'
 
-        self.layout.write_necessary_files(self.working_dir + '.current_layout')
+        self.layout.write_necessary_files(self.working_dir)
         # self.layout.write_layout(self.working_dir + '.current_layout')
         self.parameters.write_params(c_global, c_package)
 
