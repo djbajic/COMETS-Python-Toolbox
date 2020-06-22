@@ -1846,6 +1846,12 @@ class comets:
 
     def run(self, delete_files=True):
         print('\nRunning COMETS simulation ...')
+        
+        # If evolution is true, write the biomass but not the total biomass log
+        if self.parameters.all_params['evolution']:
+            self.parameters.all_params['writeTotalBiomassLog'] = False
+            self.parameters.all_params['writeBiomassLog'] = True
+
         # write the files for comets in working_dir
         c_global = self.working_dir + '.current_global'
         c_package = self.working_dir + '.current_package'
@@ -1945,6 +1951,8 @@ class comets:
                                              names=['Ancestor',
                                                     'Mutation',
                                                     'Species'])
+            if delete_files:
+                os.remove(genotypes_out_file)
                 
         # Read specific media output
         if self.parameters.all_params['writeSpecificMediaLog']:
