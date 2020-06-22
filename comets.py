@@ -1902,17 +1902,9 @@ class comets:
             
         # Read flux
         if self.parameters.all_params['writeFluxLog']:
-            self.fluxes = []
-            tff = readlines_file(
-                self.parameters.all_params['FluxLogName'])
-            for i in tff:
-                self.fluxes.append(re.findall(r'\d+',
-                                              re.search(r'\{(.*)\}',
-                                                        i).group(1)) +
-                                   [float(x)
-                                    for x in re.search(r'\[(.*)\]',
-                                                       i).group(1).split()])
-            
+
+            self.fluxes = pd.read_csv(self.parameters.all_params[
+                'FluxLogName'], delim_whitespace=True)
             if delete_files:
                 os.remove(self.parameters.all_params['FluxLogName'])
 
