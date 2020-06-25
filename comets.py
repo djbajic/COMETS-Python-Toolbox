@@ -1904,9 +1904,11 @@ class comets:
         if self.parameters.all_params['writeFluxLog']:
 
             self.fluxes = pd.read_csv(self.parameters.all_params[
-                'FluxLogName'], delim_whitespace=True)
+                'FluxLogName'], delim_whitespace=True,
+                header = None)
             if delete_files:
                 os.remove(self.parameters.all_params['FluxLogName'])
+            self.build_readable_flux_object()
 
         # Read media logs
         if self.parameters.all_params['writeMediaLog']:
@@ -1923,9 +1925,9 @@ class comets:
         if self.parameters.all_params['writeBiomassLog']:
             biomass_out_file = 'biomass_log_' + hex(id(self))
             self.biomass = pd.read_csv(biomass_out_file,
-                                       header=None, delimiter=r'\s+',
-                                       names=['Cycle', 'x', 'y',
-                                              'species', 'biomass'])
+                                       header=None, delimiter=r'\s+')
+            col_names = ["cycle", "x", "y"]  + [model.id for model in self.layout.models]
+            self.biomass.columns = col_names
             if delete_files:
                 os.remove(biomass_out_file)
             
@@ -1935,7 +1937,7 @@ class comets:
                 evo_out_file = 'biomass_log_' + hex(id(self))
                 self.evolution = pd.read_csv(evo_out_file,
                                              header=None, delimiter=r'\s+',
-                                             names=['Cycle', 'x', 'y',
+                                             names=['cycle', 'x', 'y',
                                                     'species', 'biomass'])
                 genotypes_out_file = 'GENOTYPES_biomass_log_' + hex(id(self))
                 self.genotypes = pd.read_csv(genotypes_out_file,
@@ -1943,8 +1945,8 @@ class comets:
                                              names=['Ancestor',
                                                     'Mutation',
                                                     'Species'])
-            if delete_files:
-                os.remove(genotypes_out_file)
+                if delete_files:
+                    os.remove(genotypes_out_file)
                 
         # Read specific media output
         if self.parameters.all_params['writeSpecificMediaLog']:
@@ -1961,8 +1963,72 @@ class comets:
             os.remove('.current_layout')
             os.remove('COMETS_manifest.txt')  # todo: stop writing this in java
         print('Done!')
+        
+    def build_readable_flux_object(self):
+        """ comets.fluxes is an odd beast, where the column position has a 
+        different meaning depending on what model the row is about. Therefore,
+        this function creates separate dataframes, stored in a dictionary with
+        model_id as a key, that are much more human-readable."""
 
+        self.fluxes_by_species = {}
+        for i in range(len(self.layout.models)):
+            model_num = i + 1
+        
+            model_id = self.layout.models[model_num - 1].id
+            model_rxn_names = list(self.layout.models[model_num - 1].reactions.REACTION_NAMES)
+            model_rxn_len = len(model_rxn_names)
+            
+            sub_df = self.fluxes.loc[self.fluxes[3] == model_num]
+            # this tosses extraneous columns and the model num column
+            sub_df = sub_df.drop(sub_df.columns[model_rxn_len+4 : len(sub_df.columns)], axis = 1)
+            sub_df = sub_df.drop(sub_df.columns[3], axis = 1)            
+            sub_df.columns = ["cycle","x","y"] + model_rxn_names
+            self.fluxes_by_species[model_id] = sub_df
+                    
+        
+    def get_metabolite_image(self, met, cycle):
+        if not self.parameters.all_params['writeMediaLog']:
+            raise ValueError("media log was not recorded during simulation")
+        if not met in list(self.layout.media.metabolite):
+            raise NameError("met " + met + " is not in layout.media.metabolite")
+        if not cycle in list(np.unique(self.media['cycle'])):
+            raise ValueError('media was not saved at the desired cycle. try another.')
+        im = np.zeros((self.layout.grid[0], self.layout.grid[1]))
+        aux = self.media.loc[np.logical_and(self.media['cycle'] == cycle,
+                                           self.media['metabolite'] == met)]
+        for index, row in aux.iterrows():
+            im[int(row['x']-1),int(row['y']-1)] = row['conc_mmol']
+        return(im)
+    
+    def get_biomass_image(self, model_id, cycle):
+        if not self.parameters.all_params['writeBiomassLog']:
+            raise ValueError("biomass log was not recorded during simulation")
+        if not model_id in [m.id for m in self.layout.models]:
+            raise NameError("model " + met + " is not one of the model ids")
+        if not cycle in list(np.unique(self.biomass['cycle'])):
+            raise ValueError('media was not saved at the desired cycle. try another.')
+        im = np.zeros((self.layout.grid[0], self.layout.grid[1]))
+        aux = self.biomass.loc[self.biomass['cycle'] == cycle,:]
+        for index, row in aux.iterrows():
+            im[int(row['x']-1),int(row['y']-1)] = row[model_id]
+        return(im)
+    
+    def get_flux_image(self, model_id, reaction_id, cycle):
+        if not self.parameters.all_params['writeFluxLog']:
+            raise ValueError("flux log was not recorded during simulation")
+        if not model_id in [m.id for m in self.layout.models]:
+            raise NameError("model " + met + " is not one of the model ids")
+        im = np.zeros((self.layout.grid[0], self.layout.grid[1]))
+        temp_fluxes = self.fluxes_by_species[model_id]
+        if not cycle in list(np.unique(temp_fluxes['cycle'])):
+            raise ValueError('flux was not saved at the desired cycle. try another.')        
 
+        if not reaction_id in list(temp_fluxes.columns):
+            raise NameError("reaction_id " + reaction_id + " is not a reaction in the desired model")
+        aux = temp_fluxes.loc[temp_fluxes['cycle'] == cycle,:]
+        for index, row in aux.iterrows():
+            im[int(row['x']-1),int(row['y']-1)] = row[reaction_id]
+        return(im)    
 # TODO: fix read_comets_layout to always expect text addresses of comets model files
 # TODO: make sure layout loading uses the new formats for location-specific media, refresh, etc
 # SOLVED: read media logs (after fixing format in java)
