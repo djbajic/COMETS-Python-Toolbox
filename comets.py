@@ -1902,10 +1902,12 @@ class comets:
             
         # Read flux
         if self.parameters.all_params['writeFluxLog']:
+            
+            max_rows = 4 + max([len(m.reactions) for m in self.layout.models])
 
             self.fluxes = pd.read_csv(self.parameters.all_params[
                 'FluxLogName'], delim_whitespace=True,
-                header = None)
+                header = None, names = range(max_rows))
             if delete_files:
                 os.remove(self.parameters.all_params['FluxLogName'])
             self.build_readable_flux_object()
