@@ -112,6 +112,9 @@ class model:
         self.km_flag = False
         self.hill_flag = False
         self.convection_flag = False
+        self.nonlinear_diffusion_flag = False
+        self.neutral_drift_flag = False
+        self.noise_variance_flag = False
         self.default_vmax = 10
         self.default_km = 1
         self.default_hill = 1
@@ -154,13 +157,46 @@ class model:
         dtype = object)
         new_row.loc[0,'PARAMETERS'] = parms
         self.signals = self.signals.append(new_row, ignore_index = True)
-        
-    def add_convection_parameters(self, packedDensity, elasticModulus,
-                                  frictionConstant, convDiffConstant,
-                                  noiseVariance):
-        """ adds parameters for Convection 2D biomassMotionStyle.  In order,
-        the four following parameters are required: packedDensity, elasticModulus,
-        frictionConstant, convDiffConstant, noiseVariance """
+    
+    def add_neutral_drift_parameter(self, neutralDriftSigma):
+        """ toggles neutral drift to on (which is in the model file) and 
+        sets the demographic noise parameter neutralDriftSigma) """
+        if not isinstance(neutralDriftSigma, float):
+            raise ValueError("neutralDriftSigma must be a float")
+        self.neutral_drift_flag = True
+        self.neutralDriftSigma = neutralDriftSigma
+    
+    def add_nonlinear_diffusion_parameters(self,
+                                           convNonlinDiffZero=1.,
+                                           convNonlinDiffN=1.,
+                                           convNonlinDiffExponent=1.,
+                                           convNonlinDiffHillN=10.,
+                                           convNonlinDiffHillK=0.9):
+        print("Note: for non-linear diffusion parameters to function,\n"+
+              "params.all_params['biomassMotionStyle'] = 'ConvNonlin Diffusion 2D'\n"+
+              "must also be set")
+        for parm in [convNonlinDiffZero,convNonlinDiffN,
+                     convNonlinDiffExponent,convNonlinDiffHillN,
+                     convNonlinDiffHillK]      :
+            if not isinstance(parm, float):
+                raise ValueError('all nonlinear diffusion terms must be floats')
+        self.nonlinear_diffusion_flag = True
+        self.nonlinear_diffusion_parameters = {'convNonLinDiffZero': convNonlinDiffZero,
+                                               'convNonlinDiffN': convNonlinDiffN,
+                                               'convNonlinDiffExponent': convNonlinDiffExponent,
+                                               'convNonlinDiffHillN': convNonlinDiffHillN,
+                                               'convNonlinDiffHillK': convNonlinDiffHillK}
+    
+    def add_convection_parameters(self, packedDensity = 1.,
+                                  elasticModulus = 1.,
+                                  frictionConstant = 1.,
+                                  convDiffConstant = 1.):
+        """ running this without named parameters sets
+        default parameters (i.e. 1). 
+        Named parameters are used to specify how convection works """
+        print("Note: for convection parameters to function,\n"+
+              "params.all_params['biomassMotionStyle'] = 'Convection 2D'\n"+
+              "must also be set")
         if not isinstance(packedDensity, float):
             raise ValueError('packed_density must be a float')
         if not isinstance(elasticModulus, float):
@@ -168,15 +204,20 @@ class model:
         if not isinstance(frictionConstant, float):
             raise ValueError('frictionConstant must be a float')
         if not isinstance(convDiffConstant, float):
-            raise ValueError('convDiffConstant must be a float')
-        if not isinstance(noiseVariance, float):
-            raise ValueError('noiseVariance must be a float')
+            raise ValueError('convDiffConstant must be a float')        
         self.convection_flag = True
         self.convection_parameters = {'packedDensity': packedDensity,
                                       'elasticModulus': elasticModulus,
                                       'frictionConstant': frictionConstant,
-                                      'convDiffConstant': convDiffConstant,
-                                      'noiseVariance': noiseVariance}
+                                      'convDiffConstant': convDiffConstant}
+    
+    def add_noise_variance_parameter(self, noiseVariance):
+        if not isinstance(noiseVariance, float):
+            raise ValueError('noiseVariance must be a float')
+        self.noise_variance_flag = True
+        self.noise_variance = noiseVariance
+        
+
     def get_exchange_metabolites(self):
         """ useful for layouts to grab these and get the set of them """
         exchmets = pd.merge(self.reactions.loc[self.reactions['EXCH'], 'ID'],
@@ -488,62 +529,64 @@ class model:
             lin_opt = re.split('OPTIMIZER',
                                m_filedata_string)[0].count('\n')
             self.optimizer = m_f_lines[lin_opt].split()[1]
+        # '''--------------neutral drift------------------------'''
+        if "neutralDrift" in m_filedata_string:
+            lin_obj_st = re.split('neutralDrift',
+                                  m_filedata_string)[0].count(
+                                      '\n')
+            if "TRUE" == upper(m_f_lines[lin_obj_st].strip().split()[1]):
+                self.neutral_drift_flag = True
+                self.neutralDriftSigma = 0.
+        if "neutralDriftsigma" in m_filedata_string:
+            lin_opt = re.split('neutralDriftsigma',
+                               m_filedata_string)[0].count('\n')
+            self.neutralDriftSigma = float(m_f_lines[lin_opt].split()[1])
+            
         # '''--------------convection---------------------------'''
-        if 'packedDensity' in m_filedata_string:
-            lin_obj_st = re.split('packedDensity',
-                                  m_filedata_string)[0].count(
-                                      '\n')
-            packed_density = float(m_f_lines[lin_obj_st].strip().split()[1])
-            try:
-                self.convection_parameters['packedDensity'] = packed_density
-            except:
-                self.convection_flag = True
-                self.convection_parameters = {}
-                self.convection_parameters['packedDensity'] = packed_density
-        if 'elasticModulus' in m_filedata_string:
-            lin_obj_st = re.split('elasticModulus',
-                                  m_filedata_string)[0].count(
-                                      '\n')
-            elasticModulus = float(m_f_lines[lin_obj_st].strip().split()[1])
-            try:
-                self.convection_parameters['elasticModulus'] = elasticModulus
-            except:
-                self.convection_flag = True
-                self.convection_parameters = {}
-                self.convection_parameters['elasticModulus'] = elasticModulus  
-        if 'frictionConstant' in m_filedata_string:
-            lin_obj_st = re.split('frictionConstant',
-                                  m_filedata_string)[0].count(
-                                      '\n')
-            frictionConstant = float(m_f_lines[lin_obj_st].strip().split()[1])
-            try:
-                self.convection_parameters['frictionConstant'] = frictionConstant
-            except:
-                self.convection_flag = True
-                self.convection_parameters = {}
-                self.convection_parameters['frictionConstant'] = frictionConstant 
-        if 'convDiffConstant' in m_filedata_string:
-            lin_obj_st = re.split('convDiffConstant',
-                                  m_filedata_string)[0].count(
-                                      '\n')
-            convDiffConstant = float(m_f_lines[lin_obj_st].strip().split()[1])
-            try:
-                self.convection_parameters['convDiffConstant'] = convDiffConstant
-            except:
-                self.convection_flag = True
-                self.convection_parameters = {}
-                self.convection_parameters['convDiffConstant'] = convDiffConstant 
+        for parm in ['packedDensity', 'elasticModulus',
+                     'frictionConstant', 'convDiffConstant']:
+            if parm in m_filedata_string:
+                lin_obj_st = re.split(parm,
+                                      m_filedata_string)[0].count(
+                                          '\n')
+                parm_value = float(m_f_lines[lin_obj_st].strip().split()[1])
+                try:
+                    self.convection_parameters[parm] = parm_value
+                except:
+                    self.convection_flag = True
+                    self.convection_parameters = {'packedDensity': 1.,
+                                          'elasticModulus': 1.,
+                                          'frictionConstant': 1.,
+                                          'convDiffConstant': 1.}
+                    self.convection_parameters[parm] = parm_value
+                         
+        # '''--------------non-linear diffusion---------------------------'''
+        for parm in ['convNonLinDiffZero', 'convNonlinDiffN','convNonlinDiffExponent',
+                     'convNonlinDiffHillN', 'convNonlinDiffHillK']:
+            if parm in m_filedata_string:
+                lin_obj_st = re.split(parm,
+                                      m_filedata_string)[0].count(
+                                          '\n')
+                parm_value = float(m_f_lines[lin_obj_st].strip().split()[1])
+                try:
+                    self.nonlinear_diffusion_parameters[parm] = parm_value
+                except:
+                    self.nonlinear_diffusion_flag = True
+                    self.nonlinear_diffusion_parameters = {'convNonLinDiffZero': 1.,
+                                                   'convNonlinDiffN': 1.,
+                                                   'convNonlinDiffExponent': 1.,
+                                                   'convNonlinDiffHillN': 10.,
+                                                   'convNonlinDiffHillK': .9}
+                    self.nonlinear_diffusion_parameters[parm] = parm_value
+        #'''-----------noise variance-----------------'''
         if 'noiseVariance' in m_filedata_string:
             lin_obj_st = re.split('noiseVariance',
                                   m_filedata_string)[0].count(
                                       '\n')
             noiseVariance = float(m_f_lines[lin_obj_st].strip().split()[1])
-            try:
-                self.convection_parameters['noiseVariance'] = noiseVariance
-            except:
-                self.convection_flag = True
-                self.convection_parameters = {}
-                self.convection_parameters['noiseVariance'] = noiseVariance
+
+            self.noise_variance_flag = True
+            self.noise_variance = noiseVariance
         # assign the dataframes we just built
         self.reactions = reactions
         self.metabolites = metabolites
@@ -671,6 +714,21 @@ class model:
                 for key, value in self.convection_parameters.items():
                     f.write(key + ' ' + str(value) + '\n')
                     f.write(r'//' + '\n')
+                    
+            if self.nonlinear_diffusion_flag:
+                for key, value in self.nonlinear_diffusion_parameters.items():
+                    f.write(key + ' ' + str(value) + '\n')
+                    f.write(r'//' + '\n')
+                    
+            if self.noise_variance_flag:
+                f.write('noiseVariance' + ' ' +
+                        str(self.noise_variance) + '\n')
+                f.write(r'//' + '\n')
+                    
+            if self.neutral_drift_flag:
+                f.write("neutralDrift true\n//\n")
+                f.write("neutralDriftSigma " + str(self.neutralDriftSigma) + "\n//\n")
+                
             f.write('OBJECTIVE_STYLE\n' + self.obj_style + '\n')
             f.write(r'//' + '\n')
 
@@ -1902,11 +1960,15 @@ class comets:
             
         # Read flux
         if self.parameters.all_params['writeFluxLog']:
+            
+            max_rows = 4 + max([len(m.reactions) for m in self.layout.models])
 
             self.fluxes = pd.read_csv(self.parameters.all_params[
-                'FluxLogName'], delim_whitespace=True)
+                'FluxLogName'], delim_whitespace=True,
+                header = None, names = range(max_rows))
             if delete_files:
                 os.remove(self.parameters.all_params['FluxLogName'])
+            self.build_readable_flux_object()
 
         # Read media logs
         if self.parameters.all_params['writeMediaLog']:
@@ -1923,9 +1985,9 @@ class comets:
         if self.parameters.all_params['writeBiomassLog']:
             biomass_out_file = 'biomass_log_' + hex(id(self))
             self.biomass = pd.read_csv(biomass_out_file,
-                                       header=None, delimiter=r'\s+',
-                                       names=['Cycle', 'x', 'y',
-                                              'species', 'biomass'])
+                                       header=None, delimiter=r'\s+')
+            col_names = ["cycle", "x", "y"]  + [model.id for model in self.layout.models]
+            self.biomass.columns = col_names
             if delete_files:
                 os.remove(biomass_out_file)
             
@@ -1935,7 +1997,7 @@ class comets:
                 evo_out_file = 'biomass_log_' + hex(id(self))
                 self.evolution = pd.read_csv(evo_out_file,
                                              header=None, delimiter=r'\s+',
-                                             names=['Cycle', 'x', 'y',
+                                             names=['cycle', 'x', 'y',
                                                     'species', 'biomass'])
                 genotypes_out_file = 'GENOTYPES_biomass_log_' + hex(id(self))
                 self.genotypes = pd.read_csv(genotypes_out_file,
@@ -1943,8 +2005,8 @@ class comets:
                                              names=['Ancestor',
                                                     'Mutation',
                                                     'Species'])
-            if delete_files:
-                os.remove(genotypes_out_file)
+                if delete_files:
+                    os.remove(genotypes_out_file)
                 
         # Read specific media output
         if self.parameters.all_params['writeSpecificMediaLog']:
@@ -1961,8 +2023,72 @@ class comets:
             os.remove('.current_layout')
             os.remove('COMETS_manifest.txt')  # todo: stop writing this in java
         print('Done!')
+        
+    def build_readable_flux_object(self):
+        """ comets.fluxes is an odd beast, where the column position has a 
+        different meaning depending on what model the row is about. Therefore,
+        this function creates separate dataframes, stored in a dictionary with
+        model_id as a key, that are much more human-readable."""
 
+        self.fluxes_by_species = {}
+        for i in range(len(self.layout.models)):
+            model_num = i + 1
+        
+            model_id = self.layout.models[model_num - 1].id
+            model_rxn_names = list(self.layout.models[model_num - 1].reactions.REACTION_NAMES)
+            model_rxn_len = len(model_rxn_names)
+            
+            sub_df = self.fluxes.loc[self.fluxes[3] == model_num]
+            # this tosses extraneous columns and the model num column
+            sub_df = sub_df.drop(sub_df.columns[model_rxn_len+4 : len(sub_df.columns)], axis = 1)
+            sub_df = sub_df.drop(sub_df.columns[3], axis = 1)            
+            sub_df.columns = ["cycle","x","y"] + model_rxn_names
+            self.fluxes_by_species[model_id] = sub_df
+                    
+        
+    def get_metabolite_image(self, met, cycle):
+        if not self.parameters.all_params['writeMediaLog']:
+            raise ValueError("media log was not recorded during simulation")
+        if not met in list(self.layout.media.metabolite):
+            raise NameError("met " + met + " is not in layout.media.metabolite")
+        if not cycle in list(np.unique(self.media['cycle'])):
+            raise ValueError('media was not saved at the desired cycle. try another.')
+        im = np.zeros((self.layout.grid[0], self.layout.grid[1]))
+        aux = self.media.loc[np.logical_and(self.media['cycle'] == cycle,
+                                           self.media['metabolite'] == met)]
+        for index, row in aux.iterrows():
+            im[int(row['x']-1),int(row['y']-1)] = row['conc_mmol']
+        return(im)
+    
+    def get_biomass_image(self, model_id, cycle):
+        if not self.parameters.all_params['writeBiomassLog']:
+            raise ValueError("biomass log was not recorded during simulation")
+        if not model_id in [m.id for m in self.layout.models]:
+            raise NameError("model " + met + " is not one of the model ids")
+        if not cycle in list(np.unique(self.biomass['cycle'])):
+            raise ValueError('biomass was not saved at the desired cycle. try another.')
+        im = np.zeros((self.layout.grid[0], self.layout.grid[1]))
+        aux = self.biomass.loc[self.biomass['cycle'] == cycle,:]
+        for index, row in aux.iterrows():
+            im[int(row['x']-1),int(row['y']-1)] = row[model_id]
+        return(im)
+    
+    def get_flux_image(self, model_id, reaction_id, cycle):
+        if not self.parameters.all_params['writeFluxLog']:
+            raise ValueError("flux log was not recorded during simulation")
+        if not model_id in [m.id for m in self.layout.models]:
+            raise NameError("model " + met + " is not one of the model ids")
+        im = np.zeros((self.layout.grid[0], self.layout.grid[1]))
+        temp_fluxes = self.fluxes_by_species[model_id]
+        if not cycle in list(np.unique(temp_fluxes['cycle'])):
+            raise ValueError('flux was not saved at the desired cycle. try another.')        
 
+        if not reaction_id in list(temp_fluxes.columns):
+            raise NameError("reaction_id " + reaction_id + " is not a reaction in the desired model")
+        aux = temp_fluxes.loc[temp_fluxes['cycle'] == cycle,:]
+        for index, row in aux.iterrows():
+            im[int(row['x']-1),int(row['y']-1)] = row[reaction_id]
+        return(im)    
 # TODO: fix read_comets_layout to always expect text addresses of comets model files
 # TODO: make sure layout loading uses the new formats for location-specific media, refresh, etc
 # SOLVED: read media logs (after fixing format in java)
