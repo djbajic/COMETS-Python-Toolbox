@@ -721,16 +721,19 @@ class layout:
         self.default_g_refresh = 0
         
         self.barriers = []
+
+        self.reactions = []
         
         self.region_map = None
         self.region_parameters = {}
-        
+
         self.__local_media_flag = False
         self.__diffusion_flag = False
         self.__refresh_flag = False
         self.__static_flag = False
         self.__barrier_flag = False
         self.__region_flag = False
+        self.__ext_rxns_flag = False
         
         if input_obj is None:
             print('building empty layout model\nmodels will need to be added' +
@@ -774,8 +777,8 @@ class layout:
             1) a numpy array whose shape == layout.grid, or
             2) a list of lists whose first length is grid[0] and second len is grid[1]
         
-        Populating these objects should be integer values, beginning at 1 and 
-        incrementing only, that define the different grid areas.  These are 
+        Populating these objects should be integer values, beginning at 1 and
+        incrementing only, that define the different grid areas.  These are
         intimately connected to region_parameters, which are set with
         layout.set_region_parameters()
         """
@@ -789,6 +792,24 @@ class layout:
         self.region_map = region_map
         self.__region_flag = True
 
+    def add_external_reaction(self,
+                              rxnName, metabolites, stoichiometry, **kwargs):
+        
+        ext_rxn = {'Name': rxnName,
+                   'metabolites': metabolites,
+                   'stoichiometry': stoichiometry}
+
+        for key, value in kwargs.items():
+            if key not in ['Kcat', 'Km', 'K']:
+                print('Warning: Parameter ' + key + ' i not recognized and ' +
+                      'will be ignored. Please set either Kcat and Km for' +
+                      ' enzymatic reactions, or K for non catalyzed ones')
+            else:
+                ext_rxn[key] = value
+
+        self.reactions.append(ext_rxn)
+        self.__ext_rxns_flag = True
+        
     def read_comets_layout(self, input_obj):
 
         # .. load layout file
@@ -1137,7 +1158,6 @@ class layout:
             
     def display_current_media(self):
         print(self.media[self.media['init_amount'] != 0.0])
-
         
     def add_barriers(self, barriers):
         # first see if they provided only one barrier not in a nested list, and if
@@ -1160,7 +1180,6 @@ class layout:
         if len(self.barriers) > 0:
             self.__barrier_flag = True
             self.barriers = list(set(self.barriers))
-
             
         
     def set_specific_metabolite(self, met, amount):
@@ -1286,9 +1305,9 @@ class layout:
         self.__write_barrier_chunk(lyt)
         self.__write_regions_chunk(lyt)
         lyt.write(r'  //' + '\n')
-
+        
         self.__write_initial_pop_chunk(lyt)
-
+        self.__write_ext_rxns_chunk(lyt)
         lyt.close()
         
     def __write_models_and_world_grid_chunk(self, lyt, working_dir):
@@ -1389,7 +1408,7 @@ class layout:
                 if not math.isnan(self.media.diff_c[i]):
                     lyt.write('      ' + str(i) + ' ' +
                               str(self.media.diff_c[i]) + '\n')
-            lyt.write(r'    //' + '\n')        
+            lyt.write(r'    //' + '\n')
 
     def __write_barrier_chunk(self, lyt):
         """ used by write_layout to write the barrier section to the open lyt file """
@@ -1398,6 +1417,86 @@ class layout:
             for barrier in self.barriers:
                 lyt.write('      {} {}\n'.format(barrier[0], barrier[1]))
             lyt.write('    //\n')
+
+    def __write_ext_rxns_chunk(self, lyt):
+        """ used by write_layout to write the external reactions section
+        to the open lyt file
+        """
+        reactants = []
+        enzymes = []
+        products = []
+ 
+        # rxn = {'Name': 'kaka',
+        #        'metabolites': ['akg_e', 'ac_e', 'h_e'],
+        #        'stoichiometry': [-1, 1, 1], 'K': 1e-4}
+        
+        if self.__ext_rxns_flag:
+            for i, rxn in enumerate(self.reactions):
+
+                current_reactants = [self.media.index[
+                    self.media['metabolite'] ==
+                    rxn['metabolites'][k]].tolist()[0]+1
+                                     for k in range(len(rxn['metabolites']))
+                                     if rxn['stoichiometry'][k] < 0]
+                
+                current_products = [self.media.index[
+                    self.media['metabolite'] ==
+                    rxn['metabolites'][k]].tolist()[0]+1
+                                     for k in range(len(rxn['metabolites']))
+                                     if rxn['stoichiometry'][k] > 0]
+                
+                current_react_stoich = [k for k in rxn['stoichiometry']
+                                        if k < 0]
+                
+                current_prod_stoich = [k for k in rxn['stoichiometry']
+                                       if k > 0]
+                
+                for ind, k in enumerate(current_reactants):
+                    if ind == 0:
+
+                        cl = ('        ' + str(i+1)             # reaction
+                              + ' ' + str(k)                     # metabolite
+                              + ' ' + str(-current_react_stoich[ind])  # stoich.
+                              + ' '
+                              + str([rxn['K'] if 'K' in rxn else rxn['Km']][0])
+                              + '\n')
+                        reactants.append(cl)
+                            
+                    else:
+                        cl = ('        ' + str(i+1)
+                              + ' ' + str(k)
+                              + ' ' + str(-current_react_stoich[ind])
+                              + ' ' + '\n')
+                        reactants.append(cl)
+
+                for ind, k in enumerate(current_products):
+                    cl = ('        ' + str(i+1)
+                          + ' ' + str(k)
+                          + ' ' + str(current_prod_stoich[ind])
+                          + ' ' + '\n')
+                    products.append(cl)
+
+                if 'Kcat' in rxn:
+                    cl = ('        ' + str(i+1)
+                          + ' ' + str(rxn['Kcat'])
+                          + '\n')
+                    enzymes.append(cl)
+            
+            # write the reaction lines
+            lyt.write('reactions\n')
+            lyt.write('    reactants\n')
+            for i in reactants:
+                lyt.write(i)
+
+            lyt.write('    enzymes\n')
+            for i in enzymes:
+                lyt.write(i)
+
+            lyt.write('    products\n')
+            for i in products:
+                lyt.write(i)
+            lyt.write('//\n')
+ 
             
     def __write_regions_chunk(self, lyt):
         """ used by write_layout to write the regions section to the open lyt file
@@ -1977,5 +2076,6 @@ class comets:
 # TODO: include all params in one file (maybe layout?) to avoid file writing
 # TODO: update media with all exchangeable metabolites from all models
 # TODO: give warning when unknown parameter is set
+# TODO: write parameters in layout file 
 # TODO: model biomass should be added in the layout "add_model" method, and not as a model class field 
 # TODO: make a copy function for params, layout and model 
