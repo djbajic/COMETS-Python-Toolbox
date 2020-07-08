@@ -107,11 +107,14 @@ class model:
                                              'PARAMETERS',
                                              'REACTION_NAMES','EXCH'],
                                     dtype = object)
+        self.light = []
         
         self.vmax_flag = False
         self.km_flag = False
         self.hill_flag = False
         self.convection_flag = False
+        self.light_flag = False
+
         self.nonlinear_diffusion_flag = False
         self.neutral_drift_flag = False
         self.noise_variance_flag = False
@@ -153,8 +156,8 @@ class model:
                                 'PARAMETERS': 1,  
                                 'REACTION_NAMES': rxn_name,
                                 'EXCH': exch_name},
-        index = [0],
-        dtype = object)
+                               index=[0],
+                               dtype=object)
         new_row.loc[0,'PARAMETERS'] = parms
         self.signals = self.signals.append(new_row, ignore_index = True)
     
@@ -197,6 +200,19 @@ class model:
         print("Note: for convection parameters to function,\n"+
               "params.all_params['biomassMotionStyle'] = 'Convection 2D'\n"+
               "must also be set")
+
+    def add_light(self, reaction, abs_coefficient, abs_base):
+        if (reaction not in self.reactions['REACTION_NAMES']):
+            raise ValueError('the reaction is not present in the model')
+        self.light.append([reaction, abs_coefficient, abs_base])
+        self.light_flag = True
+            
+    def add_convection_parameters(self, packedDensity, elasticModulus,
+                                  frictionConstant, convDiffConstant,
+                                  noiseVariance):
+        """ adds parameters for Convection 2D biomassMotionStyle.  In order,
+        the four following parameters are required: packedDensity, elasticModulus,
+        frictionConstant, convDiffConstant, noiseVariance """
         if not isinstance(packedDensity, float):
             raise ValueError('packed_density must be a float')
         if not isinstance(elasticModulus, float):
@@ -691,8 +707,17 @@ class model:
                 Hill.to_csv(f, mode='a', header=False, index=False)
                 f.write(r'//' + '\n')
                 
+            if self.light_flag:
+                f.write('LIGHT\n')
+                for lrxn in self.light:
+                    lrxn_ind = str(int(self.reactions.ID[
+                        self.reactions['REACTION_NAMES'] == lrxn[0]]))
+                    f.write('    {} {} {}\n'.format(lrxn_ind,
+                                                    lrxn[1], lrxn[2]))
+                f.write(r'//' + '\n')
+                
             if self.signals.size > 0:
-                f.write('MET_REACTION_SIGNAL\n');
+                f.write('MET_REACTION_SIGNAL\n')
                 sub_signals = self.signals.drop(['REACTION_NAMES', 'EXCH'], axis = 'columns')
                 col_names = list(self.signals.drop(['REACTION_NAMES','EXCH','PARAMETERS'],
                      axis = 'columns').columns)
@@ -779,16 +804,21 @@ class layout:
         self.default_g_refresh = 0
         
         self.barriers = []
+
+        self.reactions = []
+        self.periodic_media = []
         
         self.region_map = None
         self.region_parameters = {}
-        
+
         self.__local_media_flag = False
         self.__diffusion_flag = False
         self.__refresh_flag = False
         self.__static_flag = False
         self.__barrier_flag = False
         self.__region_flag = False
+        self.__ext_rxns_flag = False
+        self.__periodic_media_flag = False
         
         if input_obj is None:
             print('building empty layout model\nmodels will need to be added' +
@@ -832,8 +862,8 @@ class layout:
             1) a numpy array whose shape == layout.grid, or
             2) a list of lists whose first length is grid[0] and second len is grid[1]
         
-        Populating these objects should be integer values, beginning at 1 and 
-        incrementing only, that define the different grid areas.  These are 
+        Populating these objects should be integer values, beginning at 1 and
+        incrementing only, that define the different grid areas.  These are
         intimately connected to region_parameters, which are set with
         layout.set_region_parameters()
         """
@@ -846,7 +876,45 @@ class layout:
                              "must be True after region_map = np.array(region_map)")
         self.region_map = region_map
         self.__region_flag = True
+        
+    def add_external_reaction(self,
+                              rxnName, metabolites, stoichiometry, **kwargs):
+        
+        ext_rxn = {'Name': rxnName,
+                   'metabolites': metabolites,
+                   'stoichiometry': stoichiometry}
 
+        for key, value in kwargs.items():
+            if key not in ['Kcat', 'Km', 'K']:
+                print('Warning: Parameter ' + key + ' i not recognized and ' +
+                      'will be ignored. Please set either Kcat and Km for' +
+                      ' enzymatic reactions, or K for non catalyzed ones')
+            else:
+                ext_rxn[key] = value
+
+        if 'Kcat' in ext_rxn and len([i for i in ext_rxn['stoichiometry']
+                                      if i < 0]) > 1:
+            print('Warning: Enzymatic reactions are only allowed to have'
+                  + 'one reactant')
+        
+        self.reactions.append(ext_rxn)
+        self.__ext_rxns_flag = True
+
+    def set_global_periodic_media(self,
+                                  metabolite, function,
+                                  amplitude, period, phase, offset):
+
+        if (metabolite not in self.media['metabolite'].values):
+            raise ValueError('the metabolite is not present in the media')
+        if (function not in ['step', 'sin', 'cos', 'half_sin', 'half_cos']):
+            raise ValueError(function + ': function unknown')
+        
+        self.periodic_media.append([self.media.index[self.media['metabolite']
+                                                     == metabolite][0],
+                                    function, amplitude, period,
+                                    phase, offset])
+        self.__periodic_media_flag = True
+        
     def read_comets_layout(self, input_obj):
 
         # .. load layout file
@@ -1195,7 +1263,6 @@ class layout:
             
     def display_current_media(self):
         print(self.media[self.media['init_amount'] != 0.0])
-
         
     def add_barriers(self, barriers):
         # first see if they provided only one barrier not in a nested list, and if
@@ -1218,7 +1285,6 @@ class layout:
         if len(self.barriers) > 0:
             self.__barrier_flag = True
             self.barriers = list(set(self.barriers))
-
             
         
     def set_specific_metabolite(self, met, amount):
@@ -1343,10 +1409,11 @@ class layout:
         self.__write_static_chunk(lyt)
         self.__write_barrier_chunk(lyt)
         self.__write_regions_chunk(lyt)
+        self.__write_periodic_media_chunk(lyt)
         lyt.write(r'  //' + '\n')
 
         self.__write_initial_pop_chunk(lyt)
-
+        self.__write_ext_rxns_chunk(lyt)
         lyt.close()
         
     def __write_models_and_world_grid_chunk(self, lyt, working_dir):
@@ -1447,7 +1514,7 @@ class layout:
                 if not math.isnan(self.media.diff_c[i]):
                     lyt.write('      ' + str(i) + ' ' +
                               str(self.media.diff_c[i]) + '\n')
-            lyt.write(r'    //' + '\n')        
+            lyt.write(r'    //' + '\n')
 
     def __write_barrier_chunk(self, lyt):
         """ used by write_layout to write the barrier section to the open lyt file """
@@ -1456,7 +1523,92 @@ class layout:
             for barrier in self.barriers:
                 lyt.write('      {} {}\n'.format(barrier[0], barrier[1]))
             lyt.write('    //\n')
+
+    def __write_ext_rxns_chunk(self, lyt):
+        """ used by write_layout to write the external reactions section
+        to the open lyt file
+        """
+        reactants = []
+        enzymes = []
+        products = []
+         
+        if self.__ext_rxns_flag:
+            for i, rxn in enumerate(self.reactions):
+
+                current_reactants = [self.media.index[
+                    self.media['metabolite'] ==
+                    rxn['metabolites'][k]].tolist()[0]+1
+                                     for k in range(len(rxn['metabolites']))
+                                     if rxn['stoichiometry'][k] < 0]
+                
+                current_products = [self.media.index[
+                    self.media['metabolite'] ==
+                    rxn['metabolites'][k]].tolist()[0]+1
+                                     for k in range(len(rxn['metabolites']))
+                                     if rxn['stoichiometry'][k] > 0]
+                
+                current_react_stoich = [k for k in rxn['stoichiometry']
+                                        if k < 0]
+                
+                current_prod_stoich = [k for k in rxn['stoichiometry']
+                                       if k > 0]
+                
+                for ind, k in enumerate(current_reactants):
+                    if ind == 0:
+
+                        cl = ('        ' + str(i+1)             # reaction
+                              + ' ' + str(k)                     # metabolite
+                              + ' ' + str(-current_react_stoich[ind])  # stoich
+                              + ' '
+                              + str([rxn['K'] if 'K' in rxn else rxn['Km']][0])
+                              + '\n')
+                        reactants.append(cl)                            
+                    else:
+                        cl = ('        ' + str(i+1)
+                              + ' ' + str(k)
+                              + ' ' + str(-current_react_stoich[ind])
+                              + ' ' + '\n')
+                        reactants.append(cl)
+
+                for ind, k in enumerate(current_products):
+                    cl = ('        ' + str(i+1)
+                          + ' ' + str(k)
+                          + ' ' + str(current_prod_stoich[ind])
+                          + ' ' + '\n')
+                    products.append(cl)
+
+                if 'Kcat' in rxn:
+                    cl = ('        ' + str(i+1)
+                          + ' ' + str(rxn['Kcat'])
+                          + '\n')
+                    enzymes.append(cl)
             
+            # write the reaction lines
+            lyt.write('reactions\n')
+            lyt.write('    reactants\n')
+            for i in reactants:
+                lyt.write(i)
+
+            lyt.write('    enzymes\n')
+            for i in enzymes:
+                lyt.write(i)
+
+            lyt.write('    products\n')
+            for i in products:
+                lyt.write(i)
+            lyt.write('//\n')
+
+    def __write_periodic_media_chunk(self, lyt):
+        """ used by write_layout to write the periodic media
+        """
+        if self.__periodic_media_flag:
+            lyt.write('    periodic_media global\n')
+            for media in self.periodic_media:
+                lyt.write('        {} {} {} {} {} {}\n'.
+                          format(media[0], media[1], media[2],
+                                 media[3], media[4], media[5]))
+            lyt.write('    //\n')
+                                   
     def __write_regions_chunk(self, lyt):
         """ used by write_layout to write the regions section to the open lyt file
         specifically this section includes "substrate_diffusivity" "substrate_friction"
@@ -1985,9 +2137,9 @@ class comets:
         if self.parameters.all_params['writeBiomassLog']:
             biomass_out_file = 'biomass_log_' + hex(id(self))
             self.biomass = pd.read_csv(biomass_out_file,
-                                       header=None, delimiter=r'\s+')
-            col_names = ["cycle", "x", "y"]  + [model.id for model in self.layout.models]
-            self.biomass.columns = col_names
+                                       header=None, delimiter=r'\s+',
+                                       names=['cycle', 'x', 'y',
+                                              'species', 'biomass'])
             if delete_files:
                 os.remove(biomass_out_file)
             
@@ -2005,8 +2157,8 @@ class comets:
                                              names=['Ancestor',
                                                     'Mutation',
                                                     'Species'])
-                if delete_files:
-                    os.remove(genotypes_out_file)
+            if delete_files:
+                os.remove(genotypes_out_file)
                 
         # Read specific media output
         if self.parameters.all_params['writeSpecificMediaLog']:
@@ -2103,5 +2255,6 @@ class comets:
 # TODO: include all params in one file (maybe layout?) to avoid file writing
 # TODO: update media with all exchangeable metabolites from all models
 # TODO: give warning when unknown parameter is set
+# TODO: write parameters in layout file 
 # TODO: model biomass should be added in the layout "add_model" method, and not as a model class field 
 # TODO: make a copy function for params, layout and model 
