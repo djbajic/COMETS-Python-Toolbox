@@ -107,11 +107,14 @@ class model:
                                              'PARAMETERS',
                                              'REACTION_NAMES','EXCH'],
                                     dtype = object)
+        self.light = []
         
         self.vmax_flag = False
         self.km_flag = False
         self.hill_flag = False
         self.convection_flag = False
+        self.light_flag = False
+
         self.default_vmax = 10
         self.default_km = 1
         self.default_hill = 1
@@ -150,11 +153,17 @@ class model:
                                 'PARAMETERS': 1,  
                                 'REACTION_NAMES': rxn_name,
                                 'EXCH': exch_name},
-        index = [0],
-        dtype = object)
+                               index=[0],
+                               dtype=object)
         new_row.loc[0,'PARAMETERS'] = parms
         self.signals = self.signals.append(new_row, ignore_index = True)
-        
+
+    def add_light(self, reaction, abs_coefficient, abs_base):
+        if (reaction not in self.reactions['REACTION_NAMES']):
+            raise ValueError('the reaction is not present in the model')
+        self.light.append([reaction, abs_coefficient, abs_base])
+        self.light_flag = True
+            
     def add_convection_parameters(self, packedDensity, elasticModulus,
                                   frictionConstant, convDiffConstant,
                                   noiseVariance):
@@ -177,6 +186,7 @@ class model:
                                       'frictionConstant': frictionConstant,
                                       'convDiffConstant': convDiffConstant,
                                       'noiseVariance': noiseVariance}
+
     def get_exchange_metabolites(self):
         """ useful for layouts to grab these and get the set of them """
         exchmets = pd.merge(self.reactions.loc[self.reactions['EXCH'], 'ID'],
@@ -488,6 +498,7 @@ class model:
             lin_opt = re.split('OPTIMIZER',
                                m_filedata_string)[0].count('\n')
             self.optimizer = m_f_lines[lin_opt].split()[1]
+            
         # '''--------------convection---------------------------'''
         if 'packedDensity' in m_filedata_string:
             lin_obj_st = re.split('packedDensity',
@@ -648,8 +659,17 @@ class model:
                 Hill.to_csv(f, mode='a', header=False, index=False)
                 f.write(r'//' + '\n')
                 
+            if self.light_flag:
+                f.write('LIGHT\n')
+                for lrxn in self.light:
+                    lrxn_ind = str(int(self.reactions.ID[
+                        self.reactions['REACTION_NAMES'] == lrxn[0]]))
+                    f.write('    {} {} {}\n'.format(lrxn_ind,
+                                                    lrxn[1], lrxn[2]))
+                f.write(r'//' + '\n')
+                
             if self.signals.size > 0:
-                f.write('MET_REACTION_SIGNAL\n');
+                f.write('MET_REACTION_SIGNAL\n')
                 sub_signals = self.signals.drop(['REACTION_NAMES', 'EXCH'], axis = 'columns')
                 col_names = list(self.signals.drop(['REACTION_NAMES','EXCH','PARAMETERS'],
                      axis = 'columns').columns)
@@ -723,6 +743,7 @@ class layout:
         self.barriers = []
 
         self.reactions = []
+        self.periodic_media = []
         
         self.region_map = None
         self.region_parameters = {}
@@ -734,6 +755,7 @@ class layout:
         self.__barrier_flag = False
         self.__region_flag = False
         self.__ext_rxns_flag = False
+        self.__periodic_media_flag = False
         
         if input_obj is None:
             print('building empty layout model\nmodels will need to be added' +
@@ -791,7 +813,7 @@ class layout:
                              "must be True after region_map = np.array(region_map)")
         self.region_map = region_map
         self.__region_flag = True
-
+        
     def add_external_reaction(self,
                               rxnName, metabolites, stoichiometry, **kwargs):
         
@@ -807,8 +829,28 @@ class layout:
             else:
                 ext_rxn[key] = value
 
+        if 'Kcat' in ext_rxn and len([i for i in ext_rxn['stoichiometry']
+                                      if i < 0]) > 1:
+            print('Warning: Enzymatic reactions are only allowed to have'
+                  + 'one reactant')
+        
         self.reactions.append(ext_rxn)
         self.__ext_rxns_flag = True
+
+    def set_global_periodic_media(self,
+                                  metabolite, function,
+                                  amplitude, period, phase, offset):
+
+        if (metabolite not in self.media['metabolite'].values):
+            raise ValueError('the metabolite is not present in the media')
+        if (function not in ['step', 'sin', 'cos', 'half_sin', 'half_cos']):
+            raise ValueError(function + ': function unknown')
+        
+        self.periodic_media.append([self.media.index[self.media['metabolite']
+                                                     == metabolite][0],
+                                    function, amplitude, period,
+                                    phase, offset])
+        self.__periodic_media_flag = True
         
     def read_comets_layout(self, input_obj):
 
@@ -1304,6 +1346,7 @@ class layout:
         self.__write_static_chunk(lyt)
         self.__write_barrier_chunk(lyt)
         self.__write_regions_chunk(lyt)
+        self.__write_periodic_media_chunk(lyt)
         lyt.write(r'  //' + '\n')
         
         self.__write_initial_pop_chunk(lyt)
@@ -1425,11 +1468,7 @@ class layout:
         reactants = []
         enzymes = []
         products = []
- 
-        # rxn = {'Name': 'kaka',
-        #        'metabolites': ['akg_e', 'ac_e', 'h_e'],
-        #        'stoichiometry': [-1, 1, 1], 'K': 1e-4}
-        
+         
         if self.__ext_rxns_flag:
             for i, rxn in enumerate(self.reactions):
 
@@ -1456,12 +1495,11 @@ class layout:
 
                         cl = ('        ' + str(i+1)             # reaction
                               + ' ' + str(k)                     # metabolite
-                              + ' ' + str(-current_react_stoich[ind])  # stoich.
+                              + ' ' + str(-current_react_stoich[ind])  # stoich
                               + ' '
                               + str([rxn['K'] if 'K' in rxn else rxn['Km']][0])
                               + '\n')
-                        reactants.append(cl)
-                            
+                        reactants.append(cl)                            
                     else:
                         cl = ('        ' + str(i+1)
                               + ' ' + str(k)
@@ -1496,8 +1534,18 @@ class layout:
             for i in products:
                 lyt.write(i)
             lyt.write('//\n')
- 
-            
+
+    def __write_periodic_media_chunk(self, lyt):
+        """ used by write_layout to write the periodic media
+        """
+        if self.__periodic_media_flag:
+            lyt.write('    periodic_media global\n')
+            for media in self.periodic_media:
+                lyt.write('        {} {} {} {} {} {}\n'.
+                          format(media[0], media[1], media[2],
+                                 media[3], media[4], media[5]))
+            lyt.write('    //\n')
+                                   
     def __write_regions_chunk(self, lyt):
         """ used by write_layout to write the regions section to the open lyt file
         specifically this section includes "substrate_diffusivity" "substrate_friction"
